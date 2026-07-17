@@ -1,52 +1,39 @@
 package main
 
 import (
-	"encoding/json"
 	"log"
-	"net/http"
-	"os"
 
-	"github.com/joho/godotenv"
+	"github.com/nazarkozynets/log-viewer-api/internal/auth"
+	"github.com/nazarkozynets/log-viewer-api/internal/config"
+	"github.com/nazarkozynets/log-viewer-api/internal/logs"
+	"github.com/nazarkozynets/log-viewer-api/internal/server"
 )
 
-type HealthResponse struct {
-	Status string `json:"status"`
-}
-
 func main() {
-	if err := godotenv.Load(); err != nil {
-		log.Printf("No .env file found, using environment variables")
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("failed to load config: %v", err)
 	}
 
-	port := getEnv("PORT", "4002")
+	logsService := logs.NewService(
+		cfg.LogFiles,
+		cfg.MaxReadBytes,
+		cfg.DefaultLimit,
+		cfg.MaxLimit,
+	)
 
-	mux := http.NewServeMux()
+	logsHandler := logs.NewHandler(logsService)
 
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, HealthResponse{Status: "ok"})
-	})
+	authClient := auth.NewClient(cfg.AuthMeURL, cfg.AuthLoginURL)
+	authHandler := auth.NewHandler(authClient)
 
-	addr := ":" + port
+	router := server.NewRouter(logsHandler, authHandler)
+	handler := server.WithCORS(router, cfg.CORSOrigin)
+	app := server.New(cfg.Addr(), handler)
 
-	log.Printf("log-viewer-api started on %s", addr)
+	log.Printf("log-viewer-api started on %s", cfg.Addr())
 
-	if err := http.ListenAndServe(addr, mux); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
-	}
-}
-
-func getEnv(key, defaultValue string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		return defaultValue
-	}
-	return value
-}
-
-func writeJSON(w http.ResponseWriter, statusCode int, data any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	if err := json.NewEncoder(w).Encode(data); err != nil {
-		log.Printf("Failed to encode JSON response: %v", err)
+	if err := app.ListenAndServe(); err != nil {
+		log.Fatalf("failed to start server: %v", err)
 	}
 }
